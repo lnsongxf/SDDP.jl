@@ -4,48 +4,33 @@
 #  file, You can obtain one at http://mozilla.org/MPL/2.0/.
 #############################################################################
 
-stageobjective!(vf::AbstractValueFunction, sp::JuMP.Model, obj...) = error("You need this method")
-getstageobjective(vf::AbstractValueFunction, sp::JuMP.Model) = error("You need this method")
-init!(vf::AbstractValueFunction, m::JuMP.Model, sense, bound) = error("You need this method")
-modifyvaluefunction!(vf::AbstractValueFunction, m::SDDPModel, settings::Settings, sp::JuMP.Model) = error("You need this method")
-rebuildsubproblem!(vf::AbstractValueFunction, m::SDDPModel, sp::JuMP.Model) = nothing
-summarise{T<:AbstractValueFunction}(::Type{T}) = "$T"
-
 stageobjective!(sp::JuMP.Model, obj...) = stageobjective!(valueoracle(sp), sp, obj...)
 getstageobjective(sp::JuMP.Model) = getstageobjective(valueoracle(sp), sp)
 modifyvaluefunction!(m::SDDPModel, settings::Settings, sp::JuMP.Model) = modifyvaluefunction!(valueoracle(sp), m, settings, sp)
-rebuildsubproblem!(m::SDDPModel, sp::JuMP.Model) = rebuildsubproblem!(valueoracle(sp), m, sp)
 
-# mutable struct DefaultValueFunction{C<:AbstractCutOracle} <: AbstractValueFunction
 type DefaultValueFunction{C<:AbstractCutOracle} <: AbstractValueFunction
     cutmanager::C
     stageobjective::QuadExpr
     theta::JuMP.Variable
 end
-DefaultValueFunction(cutoracle=DefaultCutOracle()) = DefaultValueFunction(cutoracle, QuadExpr(0.0), JuMP.Variable(JuMP.Model(), 0))
 
-summarise{C}(::Type{DefaultValueFunction{C}}) = "Default"
 
-function init!{C}(vf::DefaultValueFunction{C}, m::JuMP.Model, sense, bound)
-    vf.theta = futureobjective!(sense, m, bound)
-    vf
+
+function solvesubproblem!(direction, valuefunction, m::SDDPModel, sp::JuMP.Model)
+    JuMPsolve(direction, m, sp)
 end
+solvesubproblem!(direction, m::SDDPModel, sp::JuMP.Model) = solvesubproblem!(direction, valueoracle(sp), m, sp)
 
-function stageobjective!(vf::DefaultValueFunction, sp::JuMP.Model, obj)
-    append!(vf.stageobjective, QuadExpr(obj))
-    if ext(sp).finalstage
-        JuMP.setobjective(sp, getsense(sp), obj)
-    else
-        JuMP.setobjective(sp, getsense(sp), obj + vf.theta)
-    end
-    JuMP.setobjectivesense(sp, getsense(sp))
-end
 
-getstageobjective(vf::DefaultValueFunction, sp::JuMP.Model) = getvalue(vf.stageobjective)
+# ==============================================================================
+#   3. solvesubproblem!(ForwardPass, ...)
 
-function writecut!(filename::String, cut::Cut, stage::Int, markovstate::Int)
+function writecut!(filename::String, cut::Cut, args...)
     open(filename, "a") do file
-        write(file, "$(stage), $(markovstate), $(cut.intercept)")
+        for arg in args
+            write("$(arg), ")
+        end
+        write(file, "$(cut.intercept)")
         for pi in cut.coefficients
             write(file, ",$(pi)")
         end
@@ -103,25 +88,16 @@ function modifyvaluefunction!(vf::DefaultValueFunction, m::SDDPModel, settings::
 end
 storecut!(m::SDDPModel, sp::JuMP.Model, cut::Cut, args...) = nothing
 
-function addcut!(vf::DefaultValueFunction, sp::JuMP.Model, cut::Cut)
-    ex = ext(sp)
-    affexpr = AffExpr(cut.intercept)
-    for i in 1:nstates(sp)
-        append!(affexpr, cut.coefficients[i] * ex.states[i].variable)
-    end
-    _addcut!(ex.sense, sp, vf.theta, affexpr)
-end
-
-function solvesubproblem!(::Type{BackwardPass}, vf::DefaultValueFunction, m::SDDPModel, sp::JuMP.Model)
+function solvesubproblem!(::Type{BackwardPass}, m::SDDPModel, sp::JuMP.Model, probability::Float64=1.0)
     ex = ext(sp)
     if hasnoises(sp)
-        for i in 1:length(ex.noiseprobability)
-            setnoise!(sp, ex.noises[i])
+        for (i, (rhs_noise, rhs_probability)) in enumerate(zip(ex.noises, ex.noiseprobability))
+            setnoise!(sp, rhs_noise)
             JuMPsolve(BackwardPass, m, sp)
             push!(m.storage.objective, getobjectivevalue(sp))
             push!(m.storage.noise, i)
-            push!(m.storage.probability, ex.noiseprobability[i])
-            push!(m.storage.modifiedprobability, ex.noiseprobability[i])
+            push!(m.storage.probability, probability*rhs_probability)
+            push!(m.storage.modifiedprobability, probability*rhs_probability)
             push!(m.storage.markov, ex.markovstate)
             push!(m.storage.duals, zeros(nstates(sp)))
             saveduals!(m.storage.duals[end], sp)
@@ -130,38 +106,10 @@ function solvesubproblem!(::Type{BackwardPass}, vf::DefaultValueFunction, m::SDD
         JuMPsolve(BackwardPass, m, sp)
         push!(m.storage.objective, getobjectivevalue(sp))
         push!(m.storage.noise, 0)
-        push!(m.storage.probability, 1.0)
-        push!(m.storage.modifiedprobability, 1.0)
+        push!(m.storage.probability, probability)
+        push!(m.storage.modifiedprobability, probability)
         push!(m.storage.markov, ex.markovstate)
         push!(m.storage.duals, zeros(nstates(sp)))
         saveduals!(m.storage.duals[end], sp)
     end
 end
-
-function rebuildsubproblem!{C<:AbstractCutOracle}(vf::DefaultValueFunction{C}, m::SDDPModel, sp::JuMP.Model)
-    n = n_args(m.build!)
-    ex = ext(sp)
-    for i in 1:nstates(sp)
-        pop!(ex.states)
-    end
-    for i in 1:length(ex.noises)
-        pop!(ex.noises)
-    end
-    sp = Model(solver = m.lpsolver)
-
-    vf.stageobjective = QuadExpr(0.0)
-    vf.theta = futureobjective!(ex.sense, sp, ex.problembound)
-
-    sp.ext[:SDDP] = ex
-    if n == 2
-        m.build!(sp, ex.stage)
-    elseif n == 3
-        m.build!(sp, ex.stage, ex.markovstate)
-    end
-    for cut in validcuts(vf.cutmanager)
-        addcut!(vf, sp, cut)
-    end
-    m.stages[ex.stage].subproblems[ex.markovstate] = sp
-end
-
-rebuildsubproblem!(vf::DefaultValueFunction{DefaultCutOracle}, m::SDDPModel, sp::JuMP.Model) = nothing

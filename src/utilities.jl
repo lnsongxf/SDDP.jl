@@ -115,10 +115,6 @@ function constructcut(m::SDDPModel, sp::JuMP.Model)
     Cut(intercept, coefficients)
 end
 
-_addcut!(::Type{Min}, sp, theta, affexpr) = @constraint(sp, theta >= affexpr)
-_addcut!(::Type{Max}, sp, theta, affexpr) = @constraint(sp, theta <= affexpr)
-
-
 Base.size{T}(x::CachedVector{T}) = (x.n,)
 function Base.getindex{T}(x::CachedVector{T}, i)
     if i > x.n
@@ -147,20 +143,20 @@ function reset!{T}(x::CachedVector{T})
     x.n = 0
 end
 
-
-function samplesubproblem(stage::Stage, last_markov_state::Int)
-    newidx = sample(stage.transitionprobabilities[last_markov_state, :])
-    return newidx, getsubproblem(stage, newidx)
+function cuttoaffexpr(sp::JuMP.Model, cut::SDDP.Cut)
+    ex = SDDP.ext(sp)
+    affexpr = AffExpr(cut.intercept)
+    for i in 1:SDDP.nstates(sp)
+        append!(affexpr, cut.coefficients[i] * ex.states[i].variable)
+    end
+    return affexpr
 end
+
+
 
 savesolution!(solutionstore::Void, markov::Int, noiseidx::Int, sp::JuMP.Model, t::Int) = nothing
 
 
-function solvesubproblem!(direction, valuefunction, m::SDDPModel, sp::JuMP.Model)
-    JuMPsolve(direction, m, sp)
-end
-solvesubproblem!(direction, m::SDDPModel, sp::JuMP.Model) = solvesubproblem!(direction, valueoracle(sp), m, sp)
-hasnoises(sp::JuMP.Model) = length(ext(sp).noises) > 0
 
 function JuMPsolve{T<:IterationDirection}(::Type{T}, ::SDDPModel, sp::JuMP.Model)
     @assert JuMP.solve(sp) == :Optimal

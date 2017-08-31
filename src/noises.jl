@@ -4,6 +4,8 @@
 #  file, You can obtain one at http://mozilla.org/MPL/2.0/.
 #############################################################################
 
+hasnoises(sp::JuMP.Model) = length(ext(sp).noises) > 0
+
 function setnoise!(sp::JuMP.Model, noise::Noise)
     for (c, v) in zip(noise.constraints, noise.values)
         JuMP.setRHS(c, v)
@@ -13,6 +15,17 @@ end
 function samplenoise(sp::JuMP.Model)
     noiseidx = sample(ext(sp).noiseprobability)
     return noiseidx, ext(sp).noises[noiseidx]
+end
+
+samplenoise(sp::JuMP.Model, solutionstore::Void) = samplenoise(sp)
+
+function samplenoise(sp::JuMP.Model, solutionstore::Dict{Symbol, Any})
+    if length(solutionstore[:noise])>=ext(sp).stage
+        idx = solutionstore[:noise][ext(sp).stage]
+        return idx, ext(sp).noises[idx]
+    else
+        return samplenoise(sp)
+    end
 end
 
 """

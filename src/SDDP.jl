@@ -146,23 +146,17 @@ end
 
 samplesubproblem(stage::Stage, last_markov_state::Int, solutionstore::Void) = samplesubproblem(stage, last_markov_state)
 
+function samplesubproblem(stage::Stage, last_markov_state::Int)
+    newidx = sample(stage.transitionprobabilities[last_markov_state, :])
+    return newidx, getsubproblem(stage, newidx)
+end
+
 function samplesubproblem(stage::Stage, last_markov_state, solutionstore::Dict{Symbol, Any})
     if length(solutionstore[:noise]) >= stage.t
         idx = solutionstore[:markov][stage.t]
         return idx, getsubproblem(stage, idx)
     else
         return samplesubproblem(stage, last_markov_state)
-    end
-end
-
-samplenoise(sp::JuMP.Model, solutionstore::Void) = samplenoise(sp)
-
-function samplenoise(sp::JuMP.Model, solutionstore::Dict{Symbol, Any})
-    if length(solutionstore[:noise])>=ext(sp).stage
-        idx = solutionstore[:noise][ext(sp).stage]
-        return idx, ext(sp).noises[idx]
-    else
-        return samplenoise(sp)
     end
 end
 
@@ -213,10 +207,7 @@ function backwardpass!(m::SDDPModel, settings::Settings)
     for sp in subproblems(m, 1)
         solvesubproblem!(BackwardPass, m, sp)
     end
-    # TODO: improve over just taking mean of first stage subproblems
-    bound = mean(m.storage.objective)
-
-    return bound
+    return dot(m.storage.objective, m.storage.probability)
 end
 
 function iteration!(m::SDDPModel, settings::Settings)
